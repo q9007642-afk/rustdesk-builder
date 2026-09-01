@@ -25,7 +25,7 @@ env:
 jobs:
   build-windows-x64:
     name: Windows x64 private build
-    runs-on: windows-2019
+    runs-on: windows-2022
     steps:
       - name: 检出 rustdesk 源码
         uses: actions/checkout@v3
