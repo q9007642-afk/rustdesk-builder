@@ -1,0 +1,130 @@
+# =====================================================================
+# 私有 RustDesk Windows 客户端构建工作流
+# 用途: 编译一个把自建服务器地址和 Key 写死、且隐藏网络设置界面的客户端
+# 服务器: 10.2.4.110   Key: xCwQWTevzz8dFHTqAjG4H4Hq28xCY2N7di93SvwyLsY=
+# =====================================================================
+name: Build Private RustDesk Windows Client
+
+on:
+  workflow_dispatch:
+    inputs:
+      rustdesk_version:
+        description: "要构建的 rustdesk 客户端版本 (默认 1.2.0, 含写死服务器机制)"
+        required: false
+        default: "1.2.0"
+
+env:
+  # ============ 你的自建服务器配置 (客户端将写死这些) ============
+  RENDEZVOUS_SERVER: "10.2.4.110"
+  RS_PUB_KEY: "xCwQWTevzz8dFHTqAjG4H4Hq28xCY2N7di93SvwyLsY="
+  # ============ 构建工具链版本 (与 rustdesk 1.2.0 官方一致, 勿改) ============
+  LLVM_VERSION: "15.0.6"
+  FLUTTER_VERSION: "3.10.5"
+  FLUTTER_RUST_BRIDGE_VERSION: "1.75.3"
+
+jobs:
+  build-windows-x64:
+    name: Windows x64 private build
+    runs-on: windows-2019
+    steps:
+      - name: 检出 rustdesk 源码
+        uses: actions/checkout@v3
+        with:
+          repository: rustdesk/rustdesk
+          ref: ${{ inputs.rustdesk_version || '1.2.0' }}
+          submodules: recursive
+
+      - name: 应用私有构建补丁 (隐藏网络设置页的服务器/Key 填写区)
+        shell: bash
+        run: |
+          python - <<'PYEOF'
+          import io
+          p = 'flutter/lib/desktop/pages/desktop_setting_page.dart'
+          with io.open(p, encoding='utf-8') as f:
+              lines = f.read().split('\n')
+          MARK = "'__rd_hide_server__'"
+          done = False
+          for i, line in enumerate(lines):
+              if '  server(bool enabled) {' in line:
+                  # 1) future 里: 若已写死服务器则返回隐藏标记
+                  for j in range(i, min(i + 12, len(lines))):
+                      if 'return await bind.mainGetOptions();' in lines[j]:
+                          indent = lines[j][:len(lines[j]) - len(lines[j].lstrip())]
+                          lines[j] = (indent + 'if (!await bind.mainIsUsingPublicServer()) return '
+                                      + MARK + ';\n' + lines[j])
+                          break
+                  # 2) hasData 里: 遇到标记则渲染空组件
+                  for j in range(i, min(i + 12, len(lines))):
+                      if '}(), hasData: (data) {' in lines[j]:
+                          indent = lines[j][:len(lines[j]) - len(lines[j].lstrip())]
+                          lines.insert(j + 1, indent + 'if (data == ' + MARK +
+                                       ') return const SizedBox.shrink();')
+                          break
+                  done = True
+                  break
+          if not done:
+              print('WARN: server() not found, skip UI patch')
+          with io.open(p, 'w', encoding='utf-8') as f:
+              f.write('\n'.join(lines))
+          print('UI patch applied')
+          PYEOF
+
+      - name: 安装 LLVM 和 Clang
+        uses: KyleMayes/install-llvm-action@v1
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - name: 安装 Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: 安装 Rust 工具链
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-pc-windows-msvc
+          override: true
+          profile: minimal
+
+      - name: Rust 编译缓存
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: windows-x64
+
+      - name: 安装 flutter_rust_bridge 并生成桥接代码
+        shell: pwsh
+        run: |
+          cargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --features "uuid"
+          Push-Location flutter ; flutter pub get ; Pop-Location
+          ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart
+
+      - name: 安装预编译 vcpkg 依赖 (libvpx/libyuv/opus 等)
+        shell: pwsh
+        run: |
+          cd C:\
+          git clone https://github.com/Kingtous/rustdesk_thirdpary_lib --depth=1
+
+      - name: 构建 rustdesk (自动写死 RENDEZVOUS_SERVER 和 RS_PUB_KEY)
+        env:
+          VCPKG_ROOT: C:\rustdesk_thirdpary_lib\vcpkg
+        shell: pwsh
+        run: |
+          python3 .\build.py --portable --hwcodec --flutter
+
+      - name: 打包构建产物为 zip
+        shell: pwsh
+        run: |
+          $releaseDir = "./flutter/build/windows/runner/Release"
+          Write-Host "=== 构建产物清单 ==="
+          Get-ChildItem $releaseDir | Select-Object Name,Length
+          Compress-Archive -Path "$releaseDir/*" -DestinationPath "./rustdesk-private-windows-x64.zip"
+          Write-Host "已打包 rustdesk-private-windows-x64.zip"
+
+      - name: 上传构建产物 (可下载)
+        uses: actions/upload-artifact@v3
+        with:
+          name: rustdesk-private-windows-x64
+          path: rustdesk-private-windows-x64.zip
