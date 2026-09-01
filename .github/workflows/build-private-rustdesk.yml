@@ -107,12 +107,29 @@ jobs:
           cd C:\
           git clone https://github.com/Kingtous/rustdesk_thirdpary_lib --depth=1
 
-      - name: 构建 rustdesk (自动写死 RENDEZVOUS_SERVER 和 RS_PUB_KEY)
+      - name: 构建 rustdesk (绕过 build.py, 自动写死 RENDEZVOUS_SERVER 和 RS_PUB_KEY)
         env:
           VCPKG_ROOT: C:\rustdesk_thirdpary_lib\vcpkg
         shell: pwsh
         run: |
-          python3 .\build.py --portable --hwcodec --flutter
+          # 1) 构建虚拟显示器动态库
+          cd libs/virtual_display/dylib
+          cargo build --release
+          if ($LASTEXITCODE -ne 0) { throw "virtual_display build failed" }
+          cd ../../..
+          # 2) 构建主库 (flutter 特性; RENDEZVOUS_SERVER/RS_PUB_KEY 在此被烧进 librustdesk.dll)
+          cargo build --features "virtual_display_driver,hwcodec,flutter,flutter_texture_render" --lib --release
+          if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+          if (-not (Test-Path "target/release/librustdesk.dll")) { throw "librustdesk.dll missing" }
+          # 3) 构建 Flutter 前端 (CMake 会自动链接并复制 librustdesk.dll 到输出目录)
+          cd flutter
+          flutter build windows --release
+          if ($LASTEXITCODE -ne 0) { throw "flutter build failed" }
+          cd ..
+          # 4) 复制虚拟显示器 DLL 到输出目录
+          copy target/release/deps/dylib_virtual_display.dll flutter/build/windows/runner/Release/
+          Write-Host "=== 构建完成, 输出目录内容 ==="
+          Get-ChildItem flutter/build/windows/runner/Release | Select-Object Name,Length
 
       - name: 打包构建产物为 zip
         shell: pwsh
