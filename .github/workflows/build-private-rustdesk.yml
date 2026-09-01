@@ -28,7 +28,7 @@ jobs:
     runs-on: windows-2022
     steps:
       - name: 检出 rustdesk 源码
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           repository: rustdesk/rustdesk
           ref: ${{ inputs.rustdesk_version || '1.2.0' }}
@@ -124,7 +124,7 @@ jobs:
           Write-Host "已打包 rustdesk-private-windows-x64.zip"
 
       - name: 上传构建产物 (可下载)
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: rustdesk-private-windows-x64
           path: rustdesk-private-windows-x64.zip
